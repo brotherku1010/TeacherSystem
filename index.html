@@ -1,112 +1,67 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>師資管理系統</title>
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151b36">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="師資系統">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" href="./assets/icon-192.png">
+  <link rel="apple-touch-icon" href="./assets/icon-192.png">
+  <title>古哥師資系統</title>
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <style>
-    body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #f2f4f6; overflow: hidden; font-family: sans-serif; }
-    
-    /* iOS 去廣告容器 */
-    #ios-container { position: absolute; top: -56px; left: 0; width: 100%; height: calc(100% + 56px); z-index: 10; display: none; -webkit-overflow-scrolling: touch; }
-    iframe { width: 100%; height: 100%; border: none; }
-
-    /* Android 手動按鈕容器 (預設隱藏，卡住才顯示) */
-    #android-fallback-container { 
-      display: none; 
-      position: absolute; bottom: 50px; left: 0; width: 100%; 
-      text-align: center; z-index: 20;
-      animation: fadeIn 0.5s ease-in;
-    }
-    .btn-fallback { 
-      display: inline-block; padding: 12px 30px; 
-      background: #4b6cb7; color: white; font-weight: bold; border-radius: 50px; 
-      text-decoration: none; box-shadow: 0 4px 10px rgba(0,0,0,0.2); 
-    }
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-
-    /* 載入動畫 */
-    #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; z-index: 5; }
-    .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #4b6cb7; border-radius: 50%; width: 40px; height: 40px; animation: spin 0.8s linear infinite; margin: 0 auto 15px auto; }
-    .loading-text { color: #888; font-size: 14px; font-weight: bold; }
-    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    :root { color-scheme: dark; --ink: #f7f8ff; --muted: #aeb7d8; --line: rgba(255,255,255,.1); --brand: #7376ff; --brand-2: #36a3ff; --surface: #151b36; --bg: #090d20; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; background: var(--bg); font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; }
+    body { min-height: 100dvh; }
+    .shell { display: grid; min-height: 100dvh; grid-template-rows: auto 1fr; background: radial-gradient(circle at 12% 0%, rgba(80,91,210,.32), transparent 34%), var(--bg); }
+    .topbar { display: flex; align-items: center; gap: 12px; min-height: calc(58px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 16px 10px; border-bottom: 1px solid var(--line); background: rgba(9,13,32,.87); backdrop-filter: blur(16px); }
+    .brand-mark { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 12px; background: linear-gradient(135deg, var(--brand), var(--brand-2)); box-shadow: 0 8px 18px rgba(72,94,240,.35); font-size: 18px; }
+    .brand { min-width: 0; flex: 1; }
+    .brand strong, .brand span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .brand strong { color: var(--ink); font-size: 15px; letter-spacing: .03em; }
+    .brand span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .text-button { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; color: #dfe4ff; background: rgba(255,255,255,.04); font: inherit; font-size: 12px; cursor: pointer; }
+    .text-button[hidden] { display: none; }
+    .stage { display: grid; min-height: 0; }
+    .login-panel { align-self: center; width: min(100% - 34px, 390px); margin: 28px auto; padding: 26px 22px; border: 1px solid var(--line); border-radius: 25px; background: rgba(21,27,54,.88); box-shadow: 0 28px 70px rgba(0,0,0,.32); text-align: center; }
+    .login-panel h1 { margin: 0; color: var(--ink); font-size: 23px; }
+    .login-panel p { margin: 12px 0 0; color: var(--muted); font-size: 14px; line-height: 1.7; }
+    .status { min-height: 26px; margin: 20px 0 15px; color: #c9d1ff; font-size: 13px; line-height: 1.6; }
+    .status[data-state="error"] { color: #ffb4b4; }
+    .primary-button { width: 100%; min-height: 48px; border: 0; border-radius: 15px; color: #fff; background: linear-gradient(135deg, #6d70fb, #3da3f5); box-shadow: 0 12px 25px rgba(74,101,245,.28); font: inherit; font-weight: 800; cursor: pointer; }
+    .primary-button:disabled { cursor: wait; opacity: .7; }
+    .hint { margin-top: 15px !important; color: #8f99bc !important; font-size: 12px !important; }
+    .provider-frame { display: none; width: 100%; height: 100%; min-height: 0; border: 0; background: #f2f4f6; }
+    .shell.is-ready .provider-frame { display: block; }
+    .shell.is-ready .login-panel { display: none; }
+    @media (display-mode: standalone) { .topbar { min-height: calc(54px + env(safe-area-inset-top)); } }
   </style>
 </head>
 <body>
-  
-  <div id="loader">
-    <div class="spinner"></div>
-    <div class="loading-text" id="status-text">師資系統啟動中...</div>
-  </div>
-
-  <div id="ios-container"></div>
-
-  <div id="android-fallback-container">
-    <p style="color:#666; font-size:12px; margin-bottom:10px;">若未自動跳轉，請點擊按鈕</p>
-    <a href="#" id="btn-manual-enter" class="btn-fallback">進入師資系統</a>
-  </div>
-
-  <script>
-    // ★ 已經換成你新的 師資系統 LIFF ID
-    const MY_LIFF_ID = "2009281336-jwhrUpgP"; 
-    // ★ 已經換成你新的 師資系統 GAS 網址
-    const GAS_URL = "https://script.google.com/macros/s/AKfycbyI_rO5WVEvIVLza_ruJ6FxbRVFGi1KCGjQhvQxPtwzFO18xkHcyM5Hz48fMA1zUdh-/exec"; 
-
-    window.onload = function() { initLiff(); };
-
-    async function initLiff() {
-      try {
-        await liff.init({ liffId: MY_LIFF_ID });
-        if (!liff.isLoggedIn()) { liff.login(); return; }
-
-        // 1. 取得資料
-        const profile = await liff.getProfile().catch(() => ({ userId: liff.getDecodedIDToken().sub, displayName: "Teacher", pictureUrl: "" }));
-        const urlParams = new URLSearchParams(window.location.search);
-        
-        // 2. 準備目標網址
-        let targetUrl = `${GAS_URL}?uid=${profile.userId}&page=${urlParams.get('page')||'profile'}&name=${encodeURIComponent(profile.displayName)}&pic=${encodeURIComponent(profile.pictureUrl)}`;
-        
-        const os = liff.getOS();
-
-        if (os === "ios") {
-            // --- iOS: 繼續使用 iframe 嵌入 ---
-            document.getElementById('loader').style.display = 'none';
-            
-            targetUrl += "&os=ios"; 
-            const iframe = document.createElement('iframe');
-            iframe.src = targetUrl;
-            document.getElementById('ios-container').appendChild(iframe);
-            document.getElementById('ios-container').style.display = 'block';
-
-        } else {
-            // --- Android/電腦: 自動轉跳優先 ---
-            document.getElementById('status-text').innerText = "正在進入系統...";
-            
-            const fallbackBtn = document.getElementById('btn-manual-enter');
-            fallbackBtn.onclick = () => {
-                 if (liff.isInClient()) window.location.replace(targetUrl);
-                 else window.location.href = targetUrl;
-            };
-
-            if (liff.isInClient()) {
-                window.location.replace(targetUrl);
-            } else {
-                window.location.href = targetUrl;
-            }
-
-            setTimeout(() => {
-               document.getElementById('android-fallback-container').style.display = 'block';
-               document.getElementById('status-text').innerText = "連線回應較慢";
-            }, 2500);
-        }
-
-      } catch (err) {
-        document.getElementById('status-text').innerText = "連線異常，請重新整理";
-      }
-    }
-  </script>
+  <main id="pwa-shell" class="shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">✦</div>
+      <div class="brand"><strong>古哥師資系統</strong><span id="install-state">安全工作區</span></div>
+      <button id="install-button" class="text-button" type="button" hidden>安裝 App</button>
+      <button id="logout-button" class="text-button" type="button" hidden>登出</button>
+    </header>
+    <section class="stage">
+      <div id="login-panel" class="login-panel">
+        <h1>師資工作區</h1>
+        <p>從手機桌面開啟後，會以獨立 App 介面運行。首次使用請以 LINE 完成身分驗證。</p>
+        <div id="status" class="status" role="status" aria-live="polite">正在確認安全登入環境…</div>
+        <button id="line-login-button" class="primary-button" type="button" disabled>使用 LINE 登入</button>
+        <p class="hint">登入頁會由 LINE 開啟；完成後會回到此頁並載入師資系統。</p>
+      </div>
+      <iframe id="provider-frame" class="provider-frame" title="師資系統" allow="web-share; clipboard-write" referrerpolicy="no-referrer"></iframe>
+    </section>
+  </main>
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
 </body>
 </html>
-
-

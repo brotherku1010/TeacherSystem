@@ -1,0 +1,31 @@
+{
+  "id": "/TeacherSystem/",
+  "name": "古哥師資系統",
+  "short_name": "師資系統",
+  "description": "古哥多元學習及服務平台的師資管理系統。",
+  "lang": "zh-TW",
+  "dir": "ltr",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "launch_handler": {
+    "client_mode": "focus-existing"
+  },
+  "orientation": "portrait",
+  "background_color": "#090d20",
+  "theme_color": "#151b36",
+  "icons": [
+    {
+      "src": "./assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'teacher-pwa-shell-v10';
+const CACHE_NAME = 'teacher-pwa-shell-v11';
 const APP_SHELL = [
   './',
   './index.html',

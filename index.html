@@ -13,6 +13,8 @@
   <link rel="apple-touch-icon" href="./assets/icon-192.png">
   <title>古哥師資系統</title>
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script>window.OneSignalDeferred = window.OneSignalDeferred || [];</script>
+  <script defer src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"></script>
   <style>
     :root { color-scheme: dark; --ink: #f7f8ff; --muted: #aeb7d8; --line: rgba(255,255,255,.1); --brand: #7376ff; --brand-2: #36a3ff; --surface: #151b36; --bg: #090d20; }
     * { box-sizing: border-box; }
@@ -48,6 +50,7 @@
       <div class="brand-mark" aria-hidden="true">✦</div>
       <div class="brand"><strong>古哥師資系統</strong><span id="install-state">安全工作區</span></div>
       <button id="install-button" class="text-button" type="button" hidden>安裝 App</button>
+      <button id="push-button" class="text-button" type="button" hidden>啟用通知</button>
       <button id="logout-button" class="text-button" type="button" hidden>登出</button>
     </header>
     <section class="stage">

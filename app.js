@@ -7,6 +7,7 @@
   const loginButton = document.getElementById('line-login-button');
   const logoutButton = document.getElementById('logout-button');
   const installButton = document.getElementById('install-button');
+  const pushButton = document.getElementById('push-button');
   const installState = document.getElementById('install-state');
   const frame = document.getElementById('provider-frame');
   const authNonceKey = 'teacherPwaLineAuthNonce';
@@ -28,6 +29,10 @@
   let authPollInFlight = false;
   let authApiRequest = null;
   let pendingPopupProfile = null;
+  let oneSignalClient = null;
+  let oneSignalProfile = null;
+  let oneSignalInitPromise = null;
+  let oneSignalJsonpSerial = 0;
 
   function setStatus(message, state) {
     status.textContent = message || '';
@@ -194,6 +199,92 @@
     return popupContext.isPopup ? popupContext.nonce : getPendingNonce();
   }
 
+  function requestPushRegistration(mode, profile, subscriptionId) {
+    const normalizedProfile = normalizeProfile(profile);
+    const normalizedMode = mode === 'unregister' ? 'unregister' : 'register';
+    const normalizedSubscriptionId = String(subscriptionId || '').trim();
+    if (!normalizedProfile || !normalizedSubscriptionId || !config.gasUrl) return Promise.resolve(null);
+
+    const callback = '__teacherPwaPushJsonp_' + (++oneSignalJsonpSerial) + '_' + Date.now();
+    const target = new URL(config.gasUrl);
+    target.searchParams.set('pwa_push_api', normalizedMode);
+    target.searchParams.set('uid', normalizedProfile.userId);
+    target.searchParams.set('subscription_id', normalizedSubscriptionId);
+    target.searchParams.set('callback', callback);
+
+    return new Promise((resolve) => {
+      const script = document.createElement('script');
+      const cleanup = () => {
+        window.clearTimeout(timer);
+        try { delete window[callback]; } catch (error) { window[callback] = undefined; }
+        script.remove();
+      };
+      const timer = window.setTimeout(() => { cleanup(); resolve(null); }, 7000);
+      window[callback] = (result) => { cleanup(); resolve(result || null); };
+      script.async = true;
+      script.src = target.toString();
+      script.onerror = () => { cleanup(); resolve(null); };
+      document.head.appendChild(script);
+    });
+  }
+
+  async function syncOneSignalPushSubscription(subscription) {
+    if (!oneSignalClient || !oneSignalProfile) return null;
+    const current = subscription || oneSignalClient.User.PushSubscription || {};
+    const subscriptionId = String(current.id || '').trim();
+    if (!subscriptionId) return null;
+    const isOptedIn = current.optedIn !== false;
+    return requestPushRegistration(isOptedIn ? 'register' : 'unregister', oneSignalProfile, subscriptionId);
+  }
+
+  function updatePushButton() {
+    if (!pushButton) return;
+    pushButton.hidden = !config.oneSignalAppId;
+    if (!config.oneSignalAppId || !oneSignalClient) {
+      pushButton.disabled = true;
+      pushButton.textContent = '通知準備中';
+      return;
+    }
+    const subscription = oneSignalClient.User && oneSignalClient.User.PushSubscription;
+    pushButton.disabled = false;
+    pushButton.textContent = subscription && subscription.optedIn ? '通知已啟用' : '啟用通知';
+  }
+
+  function initialiseOneSignalPush(profile) {
+    oneSignalProfile = normalizeProfile(profile);
+    if (!oneSignalProfile || !config.oneSignalAppId || popupContext.isPopup) return Promise.resolve(false);
+    if (pushButton) {
+      pushButton.hidden = false;
+      pushButton.disabled = true;
+      pushButton.textContent = '通知準備中';
+    }
+    if (oneSignalInitPromise) return oneSignalInitPromise;
+
+    oneSignalInitPromise = new Promise((resolve) => {
+      window.OneSignalDeferred = window.OneSignalDeferred || [];
+      window.OneSignalDeferred.push(async function (OneSignal) {
+        try {
+          // Reuse the existing origin-level OneSignal worker. The PWA cache
+          // worker remains scoped to /TeacherSystem/ and is not replaced.
+          await OneSignal.init({ appId: config.oneSignalAppId, autoResubscribe: true });
+          oneSignalClient = OneSignal;
+          OneSignal.User.PushSubscription.addEventListener('change', (event) => {
+            const current = event && event.current ? event.current : OneSignal.User.PushSubscription;
+            void syncOneSignalPushSubscription(current).then(updatePushButton);
+          });
+          await syncOneSignalPushSubscription();
+          updatePushButton();
+          resolve(true);
+        } catch (error) {
+          console.warn('OneSignal initialisation failed.', error);
+          updatePushButton();
+          resolve(false);
+        }
+      });
+    });
+    return oneSignalInitPromise;
+  }
+
   function buildProviderUrl(profile) {
     const target = new URL(config.gasUrl);
     target.searchParams.set('uid', profile.userId || '');
@@ -207,6 +298,7 @@
     const normalizedProfile = normalizeProfile(profile);
     if (!normalizedProfile) throw new Error('Invalid LINE user profile.');
     frame.src = buildProviderUrl(normalizedProfile);
+    void initialiseOneSignalPush(normalizedProfile);
     frame.addEventListener('load', () => {
       shell.classList.add('is-ready');
       logoutButton.hidden = false;
@@ -555,6 +647,12 @@
   });
 
   logoutButton.addEventListener('click', () => {
+    const profileToUnregister = oneSignalProfile || getRememberedProfile();
+    const subscription = oneSignalClient && oneSignalClient.User && oneSignalClient.User.PushSubscription;
+    if (profileToUnregister && subscription && subscription.id) {
+      void requestPushRegistration('unregister', profileToUnregister, subscription.id);
+    }
+    oneSignalProfile = null;
     try {
       if (window.liff && window.liff.isLoggedIn && window.liff.isLoggedIn()) window.liff.logout();
     } catch (error) {
@@ -573,6 +671,33 @@
   });
 
   loginButton.addEventListener('click', openLineAuthorization);
+  if (pushButton) {
+    pushButton.addEventListener('click', async () => {
+      if (!oneSignalClient) return;
+      pushButton.disabled = true;
+      try {
+        if (!oneSignalClient.Notifications.isPushSupported()) {
+          pushButton.textContent = '此裝置不支援通知';
+          return;
+        }
+        const subscription = oneSignalClient.User.PushSubscription;
+        if (!oneSignalClient.Notifications.permission) {
+          if (oneSignalClient.Slidedown && typeof oneSignalClient.Slidedown.promptPush === 'function') {
+            await oneSignalClient.Slidedown.promptPush();
+          } else {
+            await oneSignalClient.Notifications.requestPermission();
+          }
+        } else if (subscription && !subscription.optedIn) {
+          await subscription.optIn();
+        }
+        await syncOneSignalPushSubscription();
+      } catch (error) {
+        console.warn('Unable to request push permission.', error);
+      } finally {
+        updatePushButton();
+      }
+    });
+  }
   window.addEventListener('message', (event) => {
     handleBridgeMessage(event);
     if (event.origin !== window.location.origin) return;

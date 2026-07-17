@@ -26,6 +26,7 @@
   let authPollExpiryTimer = null;
   let authPollWatchdog = null;
   let authPollInFlight = false;
+  let authApiRequest = null;
   let pendingPopupProfile = null;
 
   function setStatus(message, state) {
@@ -262,17 +263,58 @@
     document.body.appendChild(authBridgeFrame);
   }
 
+  // JSONP 可直接跨網域載入 GAS 回應，避開 HtmlService iframe 在桌面瀏覽器的延遲與訊息隔層。
+  function requestPwaAuthApi(mode, nonce, profile) {
+    if (authApiRequest && authApiRequest.cancel) authApiRequest.cancel();
+    return new Promise((resolve, reject) => {
+      const callbackName = '__teacherPwaAuthJsonp_' + createNonce();
+      const target = new URL(config.gasUrl);
+      target.searchParams.set('pwa_auth_api', mode);
+      target.searchParams.set('auth_nonce', nonce || '');
+      target.searchParams.set('callback', callbackName);
+      target.searchParams.set('cache_bust', String(Date.now()));
+      if (mode === 'complete' && profile) {
+        target.searchParams.set('uid', profile.userId || '');
+        target.searchParams.set('name', profile.displayName || '');
+      }
+
+      const script = document.createElement('script');
+      let settled = false;
+      const settle = (error, result) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        script.remove();
+        try { delete window[callbackName]; } catch (deleteError) { window[callbackName] = undefined; }
+        if (authApiRequest && authApiRequest.callbackName === callbackName) authApiRequest = null;
+        if (error) reject(error); else resolve(result || {});
+      };
+      const timeout = window.setTimeout(() => settle(new Error('LINE 授權中繼逾時。')), 4000);
+      authApiRequest = {
+        callbackName,
+        cancel: () => settle(new Error('LINE 授權中繼已取消。'))
+      };
+      window[callbackName] = (result) => settle(null, result);
+      script.async = true;
+      script.src = target.toString();
+      script.onerror = () => settle(new Error('LINE 授權中繼無法連線。'));
+      document.head.appendChild(script);
+    });
+  }
+
   function pollAuthRelay() {
     const nonce = getPendingNonce();
     if (!nonce || popupContext.isPopup || authPollInFlight) return;
     authPollInFlight = true;
-    createAuthBridge('poll', nonce);
-    // GAS 會經過兩層 iframe；完成回傳前不可移除目前的 iframe。
-    authPollWatchdog = window.setTimeout(() => {
-      authPollWatchdog = null;
-      authPollInFlight = false;
-      clearBridgeFrame();
-    }, 9000);
+    requestPwaAuthApi('claim', nonce)
+      .then((result) => {
+        if (result && result.error) throw new Error(result.error);
+        if (result && result.profile) {
+          receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: result.nonce || nonce, profile: result.profile });
+        }
+      })
+      .catch((error) => console.warn('Unable to poll LINE authorization result.', error))
+      .finally(() => { authPollInFlight = false; });
   }
 
   function beginAuthPolling(nonce) {
@@ -281,7 +323,7 @@
     storePendingNonce(nonce);
     if (receiveStoredAuthorization(nonce)) return;
     pollAuthRelay();
-    authPollTimer = window.setInterval(pollAuthRelay, 4500);
+    authPollTimer = window.setInterval(pollAuthRelay, 1200);
     authPollExpiryTimer = window.setTimeout(() => {
       stopAuthPolling();
       clearPendingNonce();
@@ -422,11 +464,19 @@
     }
     pendingPopupProfile = rememberAuthorizedProfile(await readProfile());
     if (!pendingPopupProfile) throw new Error('Unable to store the verified LINE profile.');
-    storeAuthorizationResult(popupContext.nonce, pendingPopupProfile);
-    // 不等待 GAS 中繼完成；桌面 PWA 可立即透過 BroadcastChannel／postMessage 接收授權結果。
-    notifyPwaParent(pendingPopupProfile);
     setStatus('LINE 授權完成，正在同步至師資 App…');
-    createAuthBridge('complete', popupContext.nonce, pendingPopupProfile);
+    try {
+      const result = await requestPwaAuthApi('complete', popupContext.nonce, pendingPopupProfile);
+      if (!result || result.error || !result.stored) throw new Error((result && result.error) || 'LINE 授權資料儲存失敗。');
+      storeAuthorizationResult(popupContext.nonce, pendingPopupProfile);
+      notifyPwaParent(pendingPopupProfile);
+      setStatus('LINE 授權完成，正在返回師資 App…');
+      window.setTimeout(closeAuthorizationWindow, 250);
+    } catch (error) {
+      // 個別網路環境若阻擋 JSONP，退回既有 HtmlService 中繼，確保手機版仍可完成登入。
+      console.warn('Direct LINE authorization relay failed; falling back to HtmlService bridge.', error);
+      createAuthBridge('complete', popupContext.nonce, pendingPopupProfile);
+    }
   }
 
   async function initialiseMainApp() {

@@ -22,6 +22,8 @@
   let authBridgeFrame = null;
   let authPollTimer = null;
   let authPollExpiryTimer = null;
+  let authPollWatchdog = null;
+  let authPollInFlight = false;
   let pendingPopupProfile = null;
 
   function setStatus(message, state) {
@@ -170,12 +172,19 @@
     authBridgeFrame = null;
   }
 
+  function finishAuthPoll() {
+    if (authPollWatchdog) window.clearTimeout(authPollWatchdog);
+    authPollWatchdog = null;
+    authPollInFlight = false;
+    clearBridgeFrame();
+  }
+
   function stopAuthPolling() {
     if (authPollTimer) window.clearInterval(authPollTimer);
     if (authPollExpiryTimer) window.clearTimeout(authPollExpiryTimer);
     authPollTimer = null;
     authPollExpiryTimer = null;
-    clearBridgeFrame();
+    finishAuthPoll();
   }
 
   function createAuthBridge(mode, nonce, profile) {
@@ -198,8 +207,15 @@
 
   function pollAuthRelay() {
     const nonce = getPendingNonce();
-    if (!nonce || popupContext.isPopup) return;
+    if (!nonce || popupContext.isPopup || authPollInFlight) return;
+    authPollInFlight = true;
     createAuthBridge('poll', nonce);
+    // GAS 會經過兩層 iframe；完成回傳前不可移除目前的 iframe。
+    authPollWatchdog = window.setTimeout(() => {
+      authPollWatchdog = null;
+      authPollInFlight = false;
+      clearBridgeFrame();
+    }, 9000);
   }
 
   function beginAuthPolling(nonce) {
@@ -207,7 +223,7 @@
     stopAuthPolling();
     storePendingNonce(nonce);
     pollAuthRelay();
-    authPollTimer = window.setInterval(pollAuthRelay, 3500);
+    authPollTimer = window.setInterval(pollAuthRelay, 4500);
     authPollExpiryTimer = window.setTimeout(() => {
       stopAuthPolling();
       clearPendingNonce();
@@ -265,6 +281,19 @@
     }
   }
 
+  async function resumeRememberedSession() {
+    if (popupContext.isPopup) return false;
+    const profile = getRememberedProfile();
+    if (!profile) return false;
+    stopAuthPolling();
+    clearPendingNonce();
+    activeAuthWindow = null;
+    loginButton.disabled = true;
+    loginButton.textContent = '正在恢復登入…';
+    await launchProvider(profile);
+    return true;
+  }
+
   function notifyPwaParent(profile) {
     const payload = {
       type: 'teacher-pwa-line-auth',
@@ -312,8 +341,9 @@
       return;
     }
 
-    if (!popupContext.isPopup && data.mode === 'poll' && data.profile) {
-      receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: data.nonce, profile: data.profile });
+    if (!popupContext.isPopup && data.mode === 'poll') {
+      finishAuthPoll();
+      if (data.profile) receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: data.nonce, profile: data.profile });
     }
   }
 
@@ -325,18 +355,14 @@
       setStatus('LINE 授權尚未完成，請回到師資 App 後重新登入。', 'error');
       return;
     }
-    pendingPopupProfile = await readProfile();
+    pendingPopupProfile = rememberAuthorizedProfile(await readProfile());
+    if (!pendingPopupProfile) throw new Error('Unable to store the verified LINE profile.');
     setStatus('LINE 授權完成，正在同步至師資 App…');
     createAuthBridge('complete', popupContext.nonce, pendingPopupProfile);
   }
 
   async function initialiseMainApp() {
-    const rememberedProfile = getRememberedProfile();
-    if (rememberedProfile) {
-      setStatus('正在恢復已授權的師資登入狀態…');
-      await launchProvider(rememberedProfile);
-      return;
-    }
+    if (await resumeRememberedSession()) return;
 
     // 手機桌面 PWA 不初始化 LIFF，避免登入流程取代 App 視窗。
     if (!window.liff.isInClient || !window.liff.isInClient()) {
@@ -429,8 +455,14 @@
     receiveAuthResult(event.data);
   });
   if (authChannel) authChannel.addEventListener('message', (event) => receiveAuthResult(event.data));
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && getPendingNonce()) pollAuthRelay();
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState !== 'visible' || popupContext.isPopup) return;
+    try {
+      if (await resumeRememberedSession()) return;
+    } catch (error) {
+      console.error('Unable to restore the LINE session after returning to the PWA.', error);
+    }
+    if (getPendingNonce()) pollAuthRelay();
   });
   window.addEventListener('online', updateInstallState);
   window.addEventListener('offline', () => setStatus('目前離線。請恢復網路後再登入或讀取資料。', 'error'));

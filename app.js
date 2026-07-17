@@ -11,6 +11,7 @@
   const frame = document.getElementById('provider-frame');
   const authNonceKey = 'teacherPwaLineAuthNonce';
   const persistentNonceKey = 'teacherPwaPendingLineAuthNonce';
+  const persistentProfileKey = 'teacherPwaLineProfile';
   const authChannelName = 'teacher-pwa-line-auth';
   const bridgeMessageType = 'teacher-pwa-auth-bridge';
   const pageUrl = new URL(window.location.href);
@@ -84,6 +85,45 @@
     try { localStorage.removeItem(persistentNonceKey); } catch (error) { console.warn('Unable to clear LINE authorization state.', error); }
   }
 
+  function normalizeProfile(profile) {
+    if (!profile || typeof profile !== 'object') return null;
+    const userId = String(profile.userId || '').trim();
+    if (!/^U[0-9a-f]{32}$/i.test(userId)) return null;
+    return {
+      userId,
+      displayName: String(profile.displayName || '').trim().slice(0, 120)
+    };
+  }
+
+  function rememberAuthorizedProfile(profile) {
+    const normalized = normalizeProfile(profile);
+    if (!normalized) return null;
+    try {
+      localStorage.setItem(persistentProfileKey, JSON.stringify({
+        version: 1,
+        profile: normalized,
+        authorizedAt: Date.now()
+      }));
+    } catch (error) {
+      console.warn('Unable to persist LINE authorization profile.', error);
+    }
+    return normalized;
+  }
+
+  function getRememberedProfile() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(persistentProfileKey) || 'null');
+      return saved && saved.version === 1 ? normalizeProfile(saved.profile) : null;
+    } catch (error) {
+      console.warn('Unable to restore LINE authorization profile.', error);
+      return null;
+    }
+  }
+
+  function clearRememberedProfile() {
+    try { localStorage.removeItem(persistentProfileKey); } catch (error) { console.warn('Unable to clear LINE authorization profile.', error); }
+  }
+
   function expectedNonce() {
     return popupContext.isPopup ? popupContext.nonce : getPendingNonce();
   }
@@ -98,7 +138,9 @@
 
   async function launchProvider(profile) {
     if (!profile || !profile.userId) throw new Error('無法取得 LINE 使用者識別資料。');
-    frame.src = buildProviderUrl(profile);
+    const normalizedProfile = normalizeProfile(profile);
+    if (!normalizedProfile) throw new Error('Invalid LINE user profile.');
+    frame.src = buildProviderUrl(normalizedProfile);
     frame.addEventListener('load', () => {
       shell.classList.add('is-ready');
       logoutButton.hidden = false;
@@ -206,13 +248,15 @@
 
   async function receiveAuthResult(data) {
     if (!isExpectedAuthResult(data)) return;
+    const profile = rememberAuthorizedProfile(data.profile);
+    if (!profile) return;
     stopAuthPolling();
     clearPendingNonce();
     activeAuthWindow = null;
     loginButton.disabled = true;
     loginButton.textContent = 'LINE 授權完成';
     try {
-      await launchProvider(data.profile);
+      await launchProvider(profile);
     } catch (error) {
       console.error('Unable to load provider after LINE authorization.', error);
       loginButton.disabled = false;
@@ -233,6 +277,22 @@
     }
   }
 
+  function closeAuthorizationWindow() {
+    // LINE 內嵌瀏覽器可由 SDK 關閉；外部瀏覽器則只能嘗試關閉由 PWA 開啟的視窗。
+    try {
+      if (window.liff && typeof window.liff.isInClient === 'function' && window.liff.isInClient() && typeof window.liff.closeWindow === 'function') {
+        window.liff.closeWindow();
+        return;
+      }
+    } catch (error) {
+      console.warn('Unable to close the LIFF authorization window.', error);
+    }
+    try { window.close(); } catch (error) { console.warn('Unable to close the authorization window.', error); }
+    window.setTimeout(() => {
+      try { window.close(); } catch (error) { /* The mobile browser may block programmatic closing. */ }
+    }, 250);
+  }
+
   function handleBridgeMessage(event) {
     const data = event.data;
     const isGoogleBridge = /^https:\/\/(?:script\.google\.com|(?:[a-z0-9-]+\.)*googleusercontent\.com)$/i.test(event.origin || '');
@@ -247,7 +307,7 @@
       if (data.stored && pendingPopupProfile) {
         notifyPwaParent(pendingPopupProfile);
         setStatus('LINE 授權完成，請回到師資 App。');
-        window.setTimeout(() => window.close(), 700);
+        window.setTimeout(closeAuthorizationWindow, 350);
       }
       return;
     }
@@ -271,6 +331,13 @@
   }
 
   async function initialiseMainApp() {
+    const rememberedProfile = getRememberedProfile();
+    if (rememberedProfile) {
+      setStatus('正在恢復已授權的師資登入狀態…');
+      await launchProvider(rememberedProfile);
+      return;
+    }
+
     // 手機桌面 PWA 不初始化 LIFF，避免登入流程取代 App 視窗。
     if (!window.liff.isInClient || !window.liff.isInClient()) {
       const pendingNonce = getPendingNonce();
@@ -289,7 +356,7 @@
     // 從 LINE 的 LIFF 連結直接開啟時，仍保留原本的直接載入能力。
     await window.liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: false });
     if (window.liff.isLoggedIn()) {
-      await launchProvider(await readProfile());
+      await launchProvider(rememberAuthorizedProfile(await readProfile()));
       return;
     }
     setStatus('LINE 授權尚未完成，請重新從師資 App 開啟。', 'error');
@@ -344,6 +411,7 @@
     }
     stopAuthPolling();
     clearPendingNonce();
+    clearRememberedProfile();
     frame.removeAttribute('src');
     shell.classList.remove('is-ready');
     logoutButton.hidden = true;

@@ -16,8 +16,8 @@
   <style>
     :root { color-scheme: dark; --ink: #f7f8ff; --muted: #aeb7d8; --line: rgba(255,255,255,.1); --brand: #7376ff; --brand-2: #36a3ff; --surface: #151b36; --bg: #090d20; }
     * { box-sizing: border-box; }
-    html, body { width: 100%; min-height: 100%; margin: 0; background: var(--bg); font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; }
-    body { min-height: 100dvh; }
+    html, body { width: 100%; max-width: 100%; min-height: 100%; margin: 0; overflow-x: clip; background: var(--bg); font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; }
+    body { min-height: 100dvh; overscroll-behavior-x: none; }
     .shell { display: grid; min-height: 100dvh; grid-template-rows: auto 1fr; background: radial-gradient(circle at 12% 0%, rgba(80,91,210,.32), transparent 34%), var(--bg); }
     .topbar { display: flex; align-items: center; gap: 12px; min-height: calc(58px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 16px 10px; border-bottom: 1px solid var(--line); background: rgba(9,13,32,.87); backdrop-filter: blur(16px); }
     .brand-mark { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 12px; background: linear-gradient(135deg, var(--brand), var(--brand-2)); box-shadow: 0 8px 18px rgba(72,94,240,.35); font-size: 18px; }
@@ -36,7 +36,7 @@
     .primary-button { width: 100%; min-height: 48px; border: 0; border-radius: 15px; color: #fff; background: linear-gradient(135deg, #6d70fb, #3da3f5); box-shadow: 0 12px 25px rgba(74,101,245,.28); font: inherit; font-weight: 800; cursor: pointer; }
     .primary-button:disabled { cursor: wait; opacity: .7; }
     .hint { margin-top: 15px !important; color: #8f99bc !important; font-size: 12px !important; }
-    .provider-frame { display: none; width: 100%; height: 100%; min-height: 0; border: 0; background: #f2f4f6; }
+    .provider-frame { display: none; width: 100%; max-width: 100%; height: 100%; min-height: 0; border: 0; background: #f2f4f6; }
     .shell.is-ready .provider-frame { display: block; }
     .shell.is-ready .login-panel { display: none; }
     @media (display-mode: standalone) { .topbar { min-height: calc(54px + env(safe-area-inset-top)); } }

@@ -173,14 +173,22 @@
   }
 
   async function initialiseMainApp() {
-    // 主 PWA 不直接導向外部瀏覽器；登入由使用者點擊後在獨立授權視窗完成。
-    await window.liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: false });
-    if (!window.liff.isLoggedIn()) {
+    // 從手機桌面開啟時不可在主視窗初始化 LIFF：部分內嵌瀏覽環境會直接
+    // 導向外部登入頁，導致 PWA 本體被取代。授權改由獨立視窗負責。
+    if (!window.liff.isInClient || !window.liff.isInClient()) {
       setStatus('請點擊下方按鈕，以 LINE 完成身分驗證。');
       loginButton.disabled = false;
       return;
     }
-    await launchProvider(await readProfile());
+
+    // 使用者從 LINE 的 LIFF 連結直接開啟時，仍保留原本的直接載入能力。
+    await window.liff.init({ liffId: config.liffId, withLoginOnExternalBrowser: false });
+    if (window.liff.isLoggedIn()) {
+      await launchProvider(await readProfile());
+      return;
+    }
+    setStatus('LINE 授權尚未完成，請重新從師資 App 開啟。', 'error');
+    loginButton.disabled = false;
   }
 
   async function initialise() {

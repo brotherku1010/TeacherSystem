@@ -64,9 +64,15 @@
         console.warn('Unable to parse LIFF state.', error);
       }
     }
+    // LINE may remove query parameters during a desktop-browser redirect.
+    // window.name survives that cross-origin round trip, so retain the
+    // one-time nonce there as a final, same-window fallback.
+    const popupName = String(window.name || '');
+    const popupNameMatch = /^teacher-pwa-line-auth-([a-f0-9]{48})$/i.exec(popupName);
+    const nonce = direct.get('auth_nonce') || liffState.get('auth_nonce') || (popupNameMatch ? popupNameMatch[1].toLowerCase() : '');
     return {
-      isPopup: direct.get('pwa_auth') === '1' || liffState.get('pwa_auth') === '1',
-      nonce: direct.get('auth_nonce') || liffState.get('auth_nonce') || ''
+      isPopup: direct.get('pwa_auth') === '1' || liffState.get('pwa_auth') === '1' || Boolean(popupNameMatch),
+      nonce: nonce
     };
   }
 
@@ -343,7 +349,7 @@
 
     activeAuthWindow = window.open(
       buildAuthUrl(nonce),
-      'teacher-pwa-line-auth',
+      'teacher-pwa-line-auth-' + nonce,
       'popup=yes,width=440,height=720,resizable=yes,scrollbars=yes'
     );
 

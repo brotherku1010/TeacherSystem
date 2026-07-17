@@ -147,7 +147,8 @@
       target.searchParams.set('name', profile.displayName || '');
     }
     authBridgeFrame = document.createElement('iframe');
-    authBridgeFrame.hidden = true;
+    // 部分手機瀏覽器不會執行 display:none iframe 的 GAS 腳本；保留極小的可載入框架。
+    authBridgeFrame.style.cssText = 'position:fixed;width:1px;height:1px;right:-2px;bottom:-2px;border:0;opacity:0;pointer-events:none;';
     authBridgeFrame.setAttribute('aria-hidden', 'true');
     authBridgeFrame.src = target.toString();
     document.body.appendChild(authBridgeFrame);
@@ -164,7 +165,7 @@
     stopAuthPolling();
     storePendingNonce(nonce);
     pollAuthRelay();
-    authPollTimer = window.setInterval(pollAuthRelay, 2000);
+    authPollTimer = window.setInterval(pollAuthRelay, 3500);
     authPollExpiryTimer = window.setTimeout(() => {
       stopAuthPolling();
       clearPendingNonce();
@@ -234,7 +235,8 @@
 
   function handleBridgeMessage(event) {
     const data = event.data;
-    if (!data || data.type !== bridgeMessageType || event.source !== (authBridgeFrame && authBridgeFrame.contentWindow)) return;
+    const isGoogleBridge = /^https:\/\/(?:script\.google\.com|(?:[a-z0-9-]+\.)*googleusercontent\.com)$/i.test(event.origin || '');
+    if (!data || data.type !== bridgeMessageType || !isGoogleBridge) return;
     if (!data.nonce || data.nonce !== expectedNonce()) return;
 
     if (popupContext.isPopup && data.mode === 'complete') {

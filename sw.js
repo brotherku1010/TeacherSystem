@@ -1,4 +1,4 @@
-const CACHE_NAME = 'teacher-pwa-shell-v7';
+const CACHE_NAME = 'teacher-pwa-shell-v8';
 const APP_SHELL = [
   './',
   './index.html',
@@ -25,8 +25,15 @@ self.addEventListener('fetch', (event) => {
   // 師資資料與 GAS iframe 一律走網路，不寫入裝置快取。
   if (url.origin !== self.location.origin) return;
 
-  if (request.mode === 'navigate') {
-    event.respondWith(fetch(request).catch(() => caches.match('./index.html')));
+  const isMutableShellFile = /\/(?:index\.html|app\.js|config\.js|manifest\.webmanifest)$/i.test(url.pathname);
+  if (request.mode === 'navigate' || isMutableShellFile) {
+    // 授權邏輯與設定優先使用網路新版；離線時才退回快取，避免桌面端卡在舊版登入流程。
+    event.respondWith(
+      fetch(request).then((response) => {
+        if (response && response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+        return response;
+      }).catch(() => caches.match(request).then((cached) => cached || caches.match('./index.html')))
+    );
     return;
   }
 

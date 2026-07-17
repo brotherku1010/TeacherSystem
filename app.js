@@ -12,6 +12,8 @@
   const authNonceKey = 'teacherPwaLineAuthNonce';
   const persistentNonceKey = 'teacherPwaPendingLineAuthNonce';
   const persistentProfileKey = 'teacherPwaLineProfile';
+  const persistentAuthResultKey = 'teacherPwaLineAuthResult';
+  const authResultMaxAgeMs = 10 * 60 * 1000;
   const authChannelName = 'teacher-pwa-line-auth';
   const bridgeMessageType = 'teacher-pwa-auth-bridge';
   const pageUrl = new URL(window.location.href);
@@ -42,7 +44,9 @@
   async function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
     try {
-      await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      // 每次開啟都檢查新版，避免桌面瀏覽器長期使用舊授權流程的快取。
+      registration.update().catch(() => {});
     } catch (error) {
       console.warn('PWA service worker registration failed.', error);
     }
@@ -73,7 +77,10 @@
 
   function storePendingNonce(nonce) {
     sessionStorage.setItem(authNonceKey, nonce);
-    try { localStorage.setItem(persistentNonceKey, nonce); } catch (error) { console.warn('Unable to persist LINE authorization state.', error); }
+    try {
+      clearAuthorizationResult();
+      localStorage.setItem(persistentNonceKey, nonce);
+    } catch (error) { console.warn('Unable to persist LINE authorization state.', error); }
   }
 
   function getPendingNonce() {
@@ -84,7 +91,10 @@
 
   function clearPendingNonce() {
     sessionStorage.removeItem(authNonceKey);
-    try { localStorage.removeItem(persistentNonceKey); } catch (error) { console.warn('Unable to clear LINE authorization state.', error); }
+    try {
+      localStorage.removeItem(persistentNonceKey);
+      clearAuthorizationResult();
+    } catch (error) { console.warn('Unable to clear LINE authorization state.', error); }
   }
 
   function normalizeProfile(profile) {
@@ -124,6 +134,53 @@
 
   function clearRememberedProfile() {
     try { localStorage.removeItem(persistentProfileKey); } catch (error) { console.warn('Unable to clear LINE authorization profile.', error); }
+  }
+
+  // 桌面版在外部 LINE 視窗完成授權後，優先透過同網域 localStorage 回傳結果。
+  // GAS nonce 中繼仍保留作為跨網域或瀏覽器隔離情境的備援。
+  function storeAuthorizationResult(nonce, profile) {
+    const normalizedProfile = normalizeProfile(profile);
+    const normalizedNonce = String(nonce || '').trim().toLowerCase();
+    if (!normalizedProfile || !/^[a-f0-9]{48}$/.test(normalizedNonce)) return null;
+    try {
+      localStorage.setItem(persistentAuthResultKey, JSON.stringify({
+        version: 1,
+        nonce: normalizedNonce,
+        profile: normalizedProfile,
+        completedAt: Date.now()
+      }));
+    } catch (error) {
+      console.warn('Unable to persist completed LINE authorization.', error);
+      return null;
+    }
+    return normalizedProfile;
+  }
+
+  function getAuthorizationResult(nonce) {
+    const normalizedNonce = String(nonce || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{48}$/.test(normalizedNonce)) return null;
+    try {
+      const result = JSON.parse(localStorage.getItem(persistentAuthResultKey) || 'null');
+      if (!result || result.version !== 1 || result.nonce !== normalizedNonce || Date.now() - Number(result.completedAt || 0) > authResultMaxAgeMs) {
+        return null;
+      }
+      return normalizeProfile(result.profile);
+    } catch (error) {
+      console.warn('Unable to restore completed LINE authorization.', error);
+      return null;
+    }
+  }
+
+  function clearAuthorizationResult(nonce) {
+    try {
+      if (nonce) {
+        const result = JSON.parse(localStorage.getItem(persistentAuthResultKey) || 'null');
+        if (result && result.nonce !== String(nonce).trim().toLowerCase()) return;
+      }
+      localStorage.removeItem(persistentAuthResultKey);
+    } catch (error) {
+      console.warn('Unable to clear completed LINE authorization.', error);
+    }
   }
 
   function expectedNonce() {
@@ -222,6 +279,7 @@
     if (!nonce || popupContext.isPopup) return;
     stopAuthPolling();
     storePendingNonce(nonce);
+    if (receiveStoredAuthorization(nonce)) return;
     pollAuthRelay();
     authPollTimer = window.setInterval(pollAuthRelay, 4500);
     authPollExpiryTimer = window.setTimeout(() => {
@@ -279,6 +337,13 @@
       loginButton.textContent = '重新嘗試 LINE 登入';
       setStatus('授權已完成，但師資工作區載入失敗，請重新嘗試。', 'error');
     }
+  }
+
+  function receiveStoredAuthorization(nonce) {
+    const profile = getAuthorizationResult(nonce);
+    if (!profile) return false;
+    receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: nonce, profile: profile });
+    return true;
   }
 
   async function resumeRememberedSession() {
@@ -357,16 +422,20 @@
     }
     pendingPopupProfile = rememberAuthorizedProfile(await readProfile());
     if (!pendingPopupProfile) throw new Error('Unable to store the verified LINE profile.');
+    storeAuthorizationResult(popupContext.nonce, pendingPopupProfile);
+    // 不等待 GAS 中繼完成；桌面 PWA 可立即透過 BroadcastChannel／postMessage 接收授權結果。
+    notifyPwaParent(pendingPopupProfile);
     setStatus('LINE 授權完成，正在同步至師資 App…');
     createAuthBridge('complete', popupContext.nonce, pendingPopupProfile);
   }
 
   async function initialiseMainApp() {
+    const pendingNonce = getPendingNonce();
+    if (pendingNonce && receiveStoredAuthorization(pendingNonce)) return;
     if (await resumeRememberedSession()) return;
 
     // 手機桌面 PWA 不初始化 LIFF，避免登入流程取代 App 視窗。
     if (!window.liff.isInClient || !window.liff.isInClient()) {
-      const pendingNonce = getPendingNonce();
       if (pendingNonce) {
         loginButton.disabled = true;
         loginButton.textContent = '正在確認 LINE 授權…';
@@ -455,8 +524,14 @@
     receiveAuthResult(event.data);
   });
   if (authChannel) authChannel.addEventListener('message', (event) => receiveAuthResult(event.data));
+  window.addEventListener('storage', (event) => {
+    if (popupContext.isPopup || event.key !== persistentAuthResultKey || !event.newValue) return;
+    const nonce = getPendingNonce();
+    if (nonce) receiveStoredAuthorization(nonce);
+  });
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState !== 'visible' || popupContext.isPopup) return;
+    if (receiveStoredAuthorization(getPendingNonce())) return;
     try {
       if (await resumeRememberedSession()) return;
     } catch (error) {

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#151c2b">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="管理中心">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" type="image/png" href="../assets/icon-192.png">
+  <link rel="apple-touch-icon" href="../assets/icon-192.png">
+  <title>古哥管理核定中心</title>
+  <script>window.OneSignalDeferred = window.OneSignalDeferred || [];</script>
+  <script defer src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"></script>
+  <style>
+    :root { color-scheme: dark; --bg:#080b12; --surface:#151c2b; --line:rgba(150,181,230,.16); --text:#edf5ff; --muted:#91a1b9; --cyan:#65d8ff; --green:#4ee0a3; }
+    * { box-sizing:border-box; }
+    html, body { width:100%; max-width:100%; min-height:100%; margin:0; overflow:hidden; background:var(--bg); font-family:Inter,"Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif; }
+    body { min-height:100dvh; overscroll-behavior:none; }
+    .shell { display:grid; min-height:100dvh; grid-template-rows:auto minmax(0,1fr); background:radial-gradient(circle at 8% 0%,rgba(56,117,255,.23),transparent 31rem),radial-gradient(circle at 100% 10%,rgba(153,87,255,.18),transparent 29rem),var(--bg); }
+    .topbar { display:flex; align-items:center; gap:10px; min-height:calc(58px + env(safe-area-inset-top)); padding:calc(10px + env(safe-area-inset-top)) 14px 10px; border-bottom:1px solid var(--line); background:rgba(8,11,18,.88); backdrop-filter:blur(16px); }
+    .brand-mark { display:grid; place-items:center; flex:0 0 auto; width:37px; height:37px; border:1px solid rgba(101,216,255,.45); border-radius:13px; color:var(--cyan); background:linear-gradient(145deg,rgba(79,128,255,.3),rgba(99,216,255,.08)); box-shadow:inset 0 0 18px rgba(101,216,255,.14); }
+    .brand { min-width:0; flex:1; }
+    .brand strong,.brand span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .brand strong { color:var(--text); font-size:15px; letter-spacing:.03em; }
+    .brand span { margin-top:2px; color:var(--muted); font-size:11px; }
+    .toolbar-btn { min-height:36px; padding:0 10px; border:1px solid var(--line); border-radius:10px; color:#dce8f7; background:rgba(255,255,255,.035); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+    .toolbar-btn[hidden] { display:none; }
+    .toolbar-btn:disabled { cursor:wait; opacity:.65; }
+    .admin-frame { width:100%; height:100%; min-height:0; border:0; background:var(--bg); }
+    .loading { position:fixed; inset:auto 16px 16px; z-index:4; padding:10px 13px; border:1px solid var(--line); border-radius:12px; color:#b7c8df; background:rgba(21,28,43,.94); box-shadow:0 14px 34px rgba(0,0,0,.28); font-size:12px; }
+    .loading[hidden] { display:none; }
+    @media (max-width:380px) { .toolbar-btn { padding:0 8px; font-size:11px; } .brand strong { font-size:14px; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand-mark" aria-hidden="true">✦</div>
+      <div class="brand"><strong>管理核定中心</strong><span id="app-state">受保護的行動後台</span></div>
+      <button id="install-button" class="toolbar-btn" type="button" hidden>安裝 App</button>
+      <button id="push-button" class="toolbar-btn" type="button" hidden>啟用通知</button>
+    </header>
+    <iframe id="admin-frame" class="admin-frame" title="管理核定中心" allow="clipboard-write; web-share" referrerpolicy="no-referrer"></iframe>
+  </main>
+  <div id="loading" class="loading" role="status">正在載入管理中心…</div>
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -2,6 +2,6 @@
 window.PROVIDER_PWA_CONFIG = Object.freeze({
   liffId: '2009281336-jwhrUpgP',
   gasUrl: 'https://script.google.com/macros/s/AKfycbyI_rO5WVEvIVLza_ruJ6FxbRVFGi1KCGjQhvQxPtwzFO18xkHcyM5Hz48fMA1zUdh-/exec',
-  oneSignalAppId: '63edf55e-d6fa-4954-a990-e83ff5675d51',
+  oneSignalAppId: 'e4feab3d-45d4-4ee0-89b3-06268b63d329',
   appName: '古哥師資系統'
 });

@@ -1,4 +1,9 @@
-const CACHE_NAME = 'teacher-pwa-shell-v11';
+// OneSignal is imported into the existing PWA service worker so the PWA shell
+// and push delivery share one scope.  Registering a second root worker would
+// replace this worker and break either offline support or push notifications.
+importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
+
+const CACHE_NAME = 'teacher-pwa-shell-v13';
 const APP_SHELL = [
   './',
   './index.html',

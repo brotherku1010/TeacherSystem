@@ -210,6 +210,7 @@
     target.searchParams.set('pwa_push_api', normalizedMode);
     target.searchParams.set('uid', normalizedProfile.userId);
     target.searchParams.set('subscription_id', normalizedSubscriptionId);
+    target.searchParams.set('app_id', String(config.oneSignalAppId || '').trim());
     target.searchParams.set('callback', callback);
 
     return new Promise((resolve) => {
@@ -266,7 +267,15 @@
         try {
           // Reuse the existing origin-level OneSignal worker. The PWA cache
           // worker remains scoped to /TeacherSystem/ and is not replaced.
-          await OneSignal.init({ appId: config.oneSignalAppId, autoResubscribe: true });
+          await OneSignal.init({
+            appId: config.oneSignalAppId,
+            autoResubscribe: true,
+            // The PWA already owns ./sw.js for offline caching.  Tell
+            // OneSignal to use that worker (which imports the OneSignal
+            // worker SDK) instead of installing a second competing worker.
+            serviceWorkerPath: './sw.js',
+            serviceWorkerParam: { scope: './' }
+          });
           oneSignalClient = OneSignal;
           OneSignal.User.PushSubscription.addEventListener('change', (event) => {
             const current = event && event.current ? event.current : OneSignal.User.PushSubscription;

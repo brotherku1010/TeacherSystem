@@ -2,15 +2,15 @@
 // same /TeacherSystem/admin/ scope.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'teacher-admin-pwa-shell-v1';
+const CACHE_NAME = 'teacher-admin-pwa-shell-v2';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './config.js',
   './app.js',
-  '../assets/icon-192.png',
-  '../assets/icon-512.png'
+  './assets/admin-icon-192.png',
+  './assets/admin-icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {

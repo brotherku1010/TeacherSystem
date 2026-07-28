@@ -387,16 +387,25 @@
 
       const script = document.createElement('script');
       let settled = false;
+      const removeCallback = () => {
+        try { delete window[callbackName]; } catch (deleteError) { window[callbackName] = undefined; }
+      };
+      // GAS 冷啟動時，script 即使在逾時後才抵達仍可能執行。先保留空回呼，
+      // 避免已取消的 JSONP 回應在主控台留下 ReferenceError。
+      const retireCallback = () => {
+        window[callbackName] = () => {};
+        window.setTimeout(removeCallback, 15000);
+      };
       const settle = (error, result) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
         script.remove();
-        try { delete window[callbackName]; } catch (deleteError) { window[callbackName] = undefined; }
+        if (error) retireCallback(); else removeCallback();
         if (authApiRequest && authApiRequest.callbackName === callbackName) authApiRequest = null;
         if (error) reject(error); else resolve(result || {});
       };
-      const timeout = window.setTimeout(() => settle(new Error('LINE 授權中繼逾時。')), 4000);
+      const timeout = window.setTimeout(() => settle(new Error('LINE 授權中繼逾時。')), 15000);
       authApiRequest = {
         callbackName,
         cancel: () => settle(new Error('LINE 授權中繼已取消。'))

@@ -429,7 +429,11 @@
           receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: result.nonce || nonce, profile: result.profile });
         }
       })
-      .catch((error) => console.warn('Unable to poll LINE authorization result.', error))
+      .catch((error) => {
+        // 等待 LINE 授權期間的暫時逾時會自動輪詢下一次，不需在 F12 重複留下警告。
+        const message = String((error && error.message) || error || '');
+        if (!/授權中繼(?:逾時|已取消)/.test(message)) console.warn('Unable to poll LINE authorization result.', error);
+      })
       .finally(() => { authPollInFlight = false; });
   }
 

@@ -10,8 +10,8 @@
   const pushButton = document.getElementById('push-button');
   const installState = document.getElementById('install-state');
   const frame = document.getElementById('provider-frame');
-  const authNonceKey = 'teacherPwaLineAuthNonce';
-  const persistentNonceKey = 'teacherPwaPendingLineAuthNonce';
+  const authNonceKey = 'teacherPwaLineAuthNonceV2';
+  const persistentNonceKey = 'teacherPwaPendingLineAuthNonceV2';
   const persistentProfileKey = 'teacherPwaLineProfile';
   const persistentAuthResultKey = 'teacherPwaLineAuthResult';
   const authResultMaxAgeMs = 10 * 60 * 1000;
@@ -21,6 +21,8 @@
   const popupContext = readPopupContext(pageUrl);
   const authChannel = 'BroadcastChannel' in window ? new BroadcastChannel(authChannelName) : null;
   let deferredInstallPrompt = null;
+  let disconnectApp = null;
+  let completingAuthorization = false;
   let activeAuthWindow = null;
   let authBridgeFrame = null;
   let authPollTimer = null;
@@ -73,7 +75,7 @@
     // window.name survives that cross-origin round trip, so retain the
     // one-time nonce there as a final, same-window fallback.
     const popupName = String(window.name || '');
-    const popupNameMatch = /^teacher-pwa-line-auth-([a-f0-9]{48})$/i.exec(popupName);
+    const popupNameMatch = /^teacher-pwa-line-auth-([a-f0-9]{64})$/i.exec(popupName);
     const nonce = direct.get('auth_nonce') || liffState.get('auth_nonce') || (popupNameMatch ? popupNameMatch[1].toLowerCase() : '');
     return {
       isPopup: direct.get('pwa_auth') === '1' || liffState.get('pwa_auth') === '1' || Boolean(popupNameMatch),
@@ -88,17 +90,24 @@
   }
 
   function storePendingNonce(nonce) {
-    sessionStorage.setItem(authNonceKey, nonce);
+    if (getPendingNonce() === nonce) return;
+    const record = JSON.stringify({version:2,nonce:nonce,expiresAt:Date.now()+10*60*1000});
+    sessionStorage.setItem(authNonceKey, record);
     try {
       clearAuthorizationResult();
-      localStorage.setItem(persistentNonceKey, nonce);
+      localStorage.setItem(persistentNonceKey, record);
     } catch (error) { console.warn('Unable to persist LINE authorization state.', error); }
   }
 
   function getPendingNonce() {
-    return sessionStorage.getItem(authNonceKey) || (() => {
-      try { return localStorage.getItem(persistentNonceKey); } catch (error) { return ''; }
-    })() || '';
+    for (const [storage,key] of [[sessionStorage,authNonceKey],[localStorage,persistentNonceKey]]) {
+      try {
+        const record = JSON.parse(storage.getItem(key) || 'null');
+        if (record && record.version === 2 && /^[a-f0-9]{48}$/.test(record.nonce) && record.expiresAt > Date.now()) return record.nonce;
+        storage.removeItem(key);
+      } catch (_) { /* 舊格式、已過期或被封鎖的儲存不視為待授權。 */ }
+    }
+    return '';
   }
 
   function clearPendingNonce() {
@@ -109,22 +118,14 @@
     } catch (error) { console.warn('Unable to clear LINE authorization state.', error); }
   }
 
-  function normalizeProfile(profile) {
-    if (!profile || typeof profile !== 'object') return null;
-    const userId = String(profile.userId || '').trim();
-    if (!/^U[0-9a-f]{32}$/i.test(userId)) return null;
-    return {
-      userId,
-      displayName: String(profile.displayName || '').trim().slice(0, 120)
-    };
-  }
+  function normalizeProfile(profile) { if(!profile || !/^U[a-f0-9]{32}$/i.test(String(profile.userId||'')) || !/^[a-f0-9]{64}$/.test(String(profile.sessionToken||'')) || !(Number(profile.expiresAt)>Date.now()))return null;return {userId:profile.userId,displayName:String(profile.displayName||'').slice(0,120),sessionToken:profile.sessionToken,expiresAt:Number(profile.expiresAt)}; }
 
   function rememberAuthorizedProfile(profile) {
     const normalized = normalizeProfile(profile);
     if (!normalized) return null;
     try {
       localStorage.setItem(persistentProfileKey, JSON.stringify({
-        version: 1,
+        version: 2,
         profile: normalized,
         authorizedAt: Date.now()
       }));
@@ -137,7 +138,7 @@
   function getRememberedProfile() {
     try {
       const saved = JSON.parse(localStorage.getItem(persistentProfileKey) || 'null');
-      return saved && saved.version === 1 ? normalizeProfile(saved.profile) : null;
+      return saved && saved.version === 2 ? normalizeProfile(saved.profile) : null;
     } catch (error) {
       console.warn('Unable to restore LINE authorization profile.', error);
       return null;
@@ -153,10 +154,10 @@
   function storeAuthorizationResult(nonce, profile) {
     const normalizedProfile = normalizeProfile(profile);
     const normalizedNonce = String(nonce || '').trim().toLowerCase();
-    if (!normalizedProfile || !/^[a-f0-9]{48}$/.test(normalizedNonce)) return null;
+    if (!normalizedProfile || !/^[a-f0-9]{64}$/.test(normalizedNonce)) return null;
     try {
       localStorage.setItem(persistentAuthResultKey, JSON.stringify({
-        version: 1,
+        version: 2,
         nonce: normalizedNonce,
         profile: normalizedProfile,
         completedAt: Date.now()
@@ -170,10 +171,10 @@
 
   function getAuthorizationResult(nonce) {
     const normalizedNonce = String(nonce || '').trim().toLowerCase();
-    if (!/^[a-f0-9]{48}$/.test(normalizedNonce)) return null;
+    if (!/^[a-f0-9]{64}$/.test(normalizedNonce)) return null;
     try {
       const result = JSON.parse(localStorage.getItem(persistentAuthResultKey) || 'null');
-      if (!result || result.version !== 1 || result.nonce !== normalizedNonce || Date.now() - Number(result.completedAt || 0) > authResultMaxAgeMs) {
+      if (!result || result.version !== 2 || result.nonce !== normalizedNonce || Date.now() - Number(result.completedAt || 0) > authResultMaxAgeMs) {
         return null;
       }
       return normalizeProfile(result.profile);
@@ -199,35 +200,7 @@
     return popupContext.isPopup ? popupContext.nonce : getPendingNonce();
   }
 
-  function requestPushRegistration(mode, profile, subscriptionId) {
-    const normalizedProfile = normalizeProfile(profile);
-    const normalizedMode = mode === 'unregister' ? 'unregister' : 'register';
-    const normalizedSubscriptionId = String(subscriptionId || '').trim();
-    if (!normalizedProfile || !normalizedSubscriptionId || !config.gasUrl) return Promise.resolve(null);
-
-    const callback = '__teacherPwaPushJsonp_' + (++oneSignalJsonpSerial) + '_' + Date.now();
-    const target = new URL(config.gasUrl);
-    target.searchParams.set('pwa_push_api', normalizedMode);
-    target.searchParams.set('uid', normalizedProfile.userId);
-    target.searchParams.set('subscription_id', normalizedSubscriptionId);
-    target.searchParams.set('app_id', String(config.oneSignalAppId || '').trim());
-    target.searchParams.set('callback', callback);
-
-    return new Promise((resolve) => {
-      const script = document.createElement('script');
-      const cleanup = () => {
-        window.clearTimeout(timer);
-        try { delete window[callback]; } catch (error) { window[callback] = undefined; }
-        script.remove();
-      };
-      const timer = window.setTimeout(() => { cleanup(); resolve(null); }, 7000);
-      window[callback] = (result) => { cleanup(); resolve(result || null); };
-      script.async = true;
-      script.src = target.toString();
-      script.onerror = () => { cleanup(); resolve(null); };
-      document.head.appendChild(script);
-    });
-  }
+  async function requestPushRegistration(mode,profile,subscriptionId) {const normalized=normalizeProfile(profile);if(!normalized||!subscriptionId)return null;return SecureGAS.request(config.gasUrl,'subscribe',{sessionToken:normalized.sessionToken,subscriptionId,appId:config.oneSignalAppId,active:mode==='register'});}
 
   async function syncOneSignalPushSubscription(subscription) {
     if (!oneSignalClient || !oneSignalProfile) return null;
@@ -294,36 +267,11 @@
     return oneSignalInitPromise;
   }
 
-  function buildProviderUrl(profile) {
-    const target = new URL(config.gasUrl);
-    target.searchParams.set('uid', profile.userId || '');
-    target.searchParams.set('page', 'provider');
-    target.searchParams.set('source', 'teacher-pwa');
-    return target.toString();
-  }
+  function buildProviderUrl() { return config.gasUrl; }
 
-  async function launchProvider(profile) {
-    if (!profile || !profile.userId) throw new Error('無法取得 LINE 使用者識別資料。');
-    const normalizedProfile = normalizeProfile(profile);
-    if (!normalizedProfile) throw new Error('Invalid LINE user profile.');
-    frame.src = buildProviderUrl(normalizedProfile);
-    void initialiseOneSignalPush(normalizedProfile);
-    frame.addEventListener('load', () => {
-      shell.classList.add('is-ready');
-      logoutButton.hidden = false;
-    }, { once: true });
-    setStatus('正在載入師資工作區…');
-  }
+  async function launchProvider(profile) { const normalized=normalizeProfile(profile);if(!normalized)throw new Error('請重新使用 LINE 登入。');const verified=await SecureGAS.request(config.gasUrl,'session',{sessionToken:normalized.sessionToken});rememberAuthorizedProfile(verified);if(disconnectApp)disconnectApp();disconnectApp=SecureGAS.connectApp(config.gasUrl,frame,verified,()=>{clearRememberedProfile();frame.removeAttribute('src');shell.classList.remove('is-ready');loginButton.hidden=false;loginButton.disabled=false;setStatus('登入已失效，請重新使用 LINE 登入。','error');});void initialiseOneSignalPush(verified);frame.addEventListener('load',()=>{shell.classList.add('is-ready');logoutButton.hidden=false;},{once:true});setStatus('正在載入已驗證的師資工作區…'); }
 
-  async function readProfile() {
-    try {
-      return await window.liff.getProfile();
-    } catch (error) {
-      const decoded = window.liff.getDecodedIDToken && window.liff.getDecodedIDToken();
-      if (decoded && decoded.sub) return { userId: decoded.sub, displayName: decoded.name || '' };
-      throw error;
-    }
-  }
+  async function readProfile() { return SecureGAS.request(config.gasUrl,'login',{idToken:window.liff.getIDToken&&window.liff.getIDToken(),accessToken:window.liff.getAccessToken&&window.liff.getAccessToken()}); }
 
   function buildAuthUrl(nonce) {
     const target = new URL(`https://liff.line.me/${encodeURIComponent(config.liffId)}/`);
@@ -352,71 +300,10 @@
     finishAuthPoll();
   }
 
-  function createAuthBridge(mode, nonce, profile) {
-    clearBridgeFrame();
-    const target = new URL(config.gasUrl);
-    target.searchParams.set('pwa_auth_bridge', mode);
-    target.searchParams.set('auth_nonce', nonce);
-    target.searchParams.set('cache_bust', String(Date.now()));
-    if (mode === 'complete' && profile) {
-      target.searchParams.set('uid', profile.userId || '');
-      target.searchParams.set('name', profile.displayName || '');
-    }
-    authBridgeFrame = document.createElement('iframe');
-    // 部分手機瀏覽器不會執行 display:none iframe 的 GAS 腳本；保留極小的可載入框架。
-    authBridgeFrame.style.cssText = 'position:fixed;width:1px;height:1px;right:-2px;bottom:-2px;border:0;opacity:0;pointer-events:none;';
-    authBridgeFrame.setAttribute('aria-hidden', 'true');
-    authBridgeFrame.src = target.toString();
-    document.body.appendChild(authBridgeFrame);
-  }
+  function createAuthBridge(mode,nonce,profile) {requestPwaAuthApi(mode==='poll'?'claim':mode,nonce,profile).then(result=>{if(result.stored&&profile){notifyPwaParent(profile);window.setTimeout(closeAuthorizationWindow,250);}else if(result.profile)receiveAuthResult({type:'teacher-pwa-line-auth',nonce:result.nonce,profile:result.profile});}).catch(()=>setStatus('驗證同步失敗，請重新登入。','error'));}
 
-  // JSONP 可直接跨網域載入 GAS 回應，避開 HtmlService iframe 在桌面瀏覽器的延遲與訊息隔層。
-  function requestPwaAuthApi(mode, nonce, profile) {
-    if (authApiRequest && authApiRequest.cancel) authApiRequest.cancel();
-    return new Promise((resolve, reject) => {
-      const callbackName = '__teacherPwaAuthJsonp_' + createNonce();
-      const target = new URL(config.gasUrl);
-      target.searchParams.set('pwa_auth_api', mode);
-      target.searchParams.set('auth_nonce', nonce || '');
-      target.searchParams.set('callback', callbackName);
-      target.searchParams.set('cache_bust', String(Date.now()));
-      if (mode === 'complete' && profile) {
-        target.searchParams.set('uid', profile.userId || '');
-        target.searchParams.set('name', profile.displayName || '');
-      }
-
-      const script = document.createElement('script');
-      let settled = false;
-      const removeCallback = () => {
-        try { delete window[callbackName]; } catch (deleteError) { window[callbackName] = undefined; }
-      };
-      // GAS 冷啟動時，script 即使在逾時後才抵達仍可能執行。先保留空回呼，
-      // 避免已取消的 JSONP 回應在主控台留下 ReferenceError。
-      const retireCallback = () => {
-        window[callbackName] = () => {};
-        window.setTimeout(removeCallback, 15000);
-      };
-      const settle = (error, result) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        script.remove();
-        if (error) retireCallback(); else removeCallback();
-        if (authApiRequest && authApiRequest.callbackName === callbackName) authApiRequest = null;
-        if (error) reject(error); else resolve(result || {});
-      };
-      const timeout = window.setTimeout(() => settle(new Error('LINE 授權中繼逾時。')), 15000);
-      authApiRequest = {
-        callbackName,
-        cancel: () => settle(new Error('LINE 授權中繼已取消。'))
-      };
-      window[callbackName] = (result) => settle(null, result);
-      script.async = true;
-      script.src = target.toString();
-      script.onerror = () => settle(new Error('LINE 授權中繼無法連線。'));
-      document.head.appendChild(script);
-    });
-  }
+  // 安全中繼使用 postMessage，URL 僅有隨機通道，不含登入憑證。
+  async function requestPwaAuthApi(mode,nonce,profile) {if(mode==='complete')return {...await SecureGAS.request(config.gasUrl,'relay-store',{challenge:nonce,sessionToken:profile.sessionToken}),nonce};return {...await SecureGAS.request(config.gasUrl,'relay-claim',{verifier:nonce}),nonce:await SecureGAS.hash(nonce)};}
 
   function pollAuthRelay() {
     const nonce = getPendingNonce();
@@ -437,11 +324,11 @@
       .finally(() => { authPollInFlight = false; });
   }
 
-  function beginAuthPolling(nonce) {
+  async function beginAuthPolling(nonce) {
     if (!nonce || popupContext.isPopup) return;
     stopAuthPolling();
     storePendingNonce(nonce);
-    if (receiveStoredAuthorization(nonce)) return;
+    if (await receiveStoredAuthorization(nonce)) return;
     pollAuthRelay();
     authPollTimer = window.setInterval(pollAuthRelay, 1200);
     authPollExpiryTimer = window.setTimeout(() => {
@@ -453,39 +340,15 @@
     }, 10 * 60 * 1000);
   }
 
-  function openLineAuthorization() {
-    const nonce = createNonce();
-    storePendingNonce(nonce);
-    beginAuthPolling(nonce);
-    loginButton.disabled = true;
-    loginButton.textContent = '正在等待 LINE 授權…';
-    setStatus('請在 LINE 完成授權；回到此 App 後會自動載入師資系統。');
+  async function openLineAuthorization() {const nonce=createNonce();activeAuthWindow=window.open('about:blank','teacher-pwa-line-auth-start','popup=yes,width=440,height=720,resizable=yes,scrollbars=yes');if(!activeAuthWindow){setStatus('請允許開啟 LINE 登入視窗後重試。','error');return;}const challenge=await SecureGAS.hash(nonce);activeAuthWindow.name='teacher-pwa-line-auth-'+challenge;storePendingNonce(nonce);void beginAuthPolling(nonce);loginButton.disabled=true;loginButton.textContent='正在等待 LINE 授權…';setStatus('請在 LINE 完成授權；回到 App 後會自動同步。');activeAuthWindow.location.replace(buildAuthUrl(challenge));}
 
-    activeAuthWindow = window.open(
-      buildAuthUrl(nonce),
-      'teacher-pwa-line-auth-' + nonce,
-      'popup=yes,width=440,height=720,resizable=yes,scrollbars=yes'
-    );
-
-    if (!activeAuthWindow) {
-      stopAuthPolling();
-      clearPendingNonce();
-      loginButton.disabled = false;
-      loginButton.textContent = '使用 LINE 登入';
-      setStatus('無法開啟 LINE 授權視窗，請允許此 App 開啟視窗後重試。', 'error');
-    }
-  }
-
-  function isExpectedAuthResult(data) {
-    if (!data || data.type !== 'teacher-pwa-line-auth' || !data.profile || !data.profile.userId) return false;
-    const nonce = expectedNonce();
-    return Boolean(nonce && data.nonce && data.nonce === nonce);
-  }
+  async function isExpectedAuthResult(data) {if(!data||data.type!=='teacher-pwa-line-auth'||!normalizeProfile(data.profile))return false;const nonce=getPendingNonce();return Boolean(nonce&&data.nonce===await SecureGAS.hash(nonce));}
 
   async function receiveAuthResult(data) {
-    if (!isExpectedAuthResult(data)) return;
+    if (completingAuthorization || !await isExpectedAuthResult(data) || completingAuthorization) return;
     const profile = rememberAuthorizedProfile(data.profile);
     if (!profile) return;
+    completingAuthorization = true;
     stopAuthPolling();
     clearPendingNonce();
     activeAuthWindow = null;
@@ -498,15 +361,12 @@
       loginButton.disabled = false;
       loginButton.textContent = '重新嘗試 LINE 登入';
       setStatus('授權已完成，但師資工作區載入失敗，請重新嘗試。', 'error');
+    } finally {
+      completingAuthorization = false;
     }
   }
 
-  function receiveStoredAuthorization(nonce) {
-    const profile = getAuthorizationResult(nonce);
-    if (!profile) return false;
-    receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: nonce, profile: profile });
-    return true;
-  }
+  async function receiveStoredAuthorization(nonce) {if(!nonce)return false;const challenge=await SecureGAS.hash(nonce),profile=getAuthorizationResult(challenge);if(!profile)return false;await receiveAuthResult({type:'teacher-pwa-line-auth',nonce:challenge,profile});return true;}
 
   async function resumeRememberedSession() {
     if (popupContext.isPopup) return false;
@@ -517,21 +377,10 @@
     activeAuthWindow = null;
     loginButton.disabled = true;
     loginButton.textContent = '正在恢復登入…';
-    await launchProvider(profile);
-    return true;
+    try {await launchProvider(profile);return true;} catch (_) {clearRememberedProfile();loginButton.disabled=false;return false;}
   }
 
-  function notifyPwaParent(profile) {
-    const payload = {
-      type: 'teacher-pwa-line-auth',
-      nonce: popupContext.nonce,
-      profile: { userId: profile.userId, displayName: profile.displayName || '' }
-    };
-    if (authChannel) authChannel.postMessage(payload);
-    if (window.opener && !window.opener.closed) {
-      window.opener.postMessage(payload, window.location.origin);
-    }
-  }
+  function notifyPwaParent(profile) {const payload={type:'teacher-pwa-line-auth',nonce:popupContext.nonce,profile:normalizeProfile(profile)};if(authChannel)authChannel.postMessage(payload);if(window.opener&&!window.opener.closed)window.opener.postMessage(payload,window.location.origin);}
 
   function closeAuthorizationWindow() {
     // LINE 內嵌瀏覽器可由 SDK 關閉；外部瀏覽器則只能嘗試關閉由 PWA 開啟的視窗。
@@ -549,30 +398,7 @@
     }, 250);
   }
 
-  function handleBridgeMessage(event) {
-    const data = event.data;
-    const isGoogleBridge = /^https:\/\/(?:script\.google\.com|(?:[a-z0-9-]+\.)*googleusercontent\.com)$/i.test(event.origin || '');
-    if (!data || data.type !== bridgeMessageType || !isGoogleBridge) return;
-    if (!data.nonce || data.nonce !== expectedNonce()) return;
-
-    if (popupContext.isPopup && data.mode === 'complete') {
-      if (data.error) {
-        setStatus('LINE 授權已完成，但同步回 App 失敗，請回到師資 App 後重新登入。', 'error');
-        return;
-      }
-      if (data.stored && pendingPopupProfile) {
-        notifyPwaParent(pendingPopupProfile);
-        setStatus('LINE 授權完成，請回到師資 App。');
-        window.setTimeout(closeAuthorizationWindow, 350);
-      }
-      return;
-    }
-
-    if (!popupContext.isPopup && data.mode === 'poll') {
-      finishAuthPoll();
-      if (data.profile) receiveAuthResult({ type: 'teacher-pwa-line-auth', nonce: data.nonce, profile: data.profile });
-    }
-  }
+  function handleBridgeMessage() { /* 舊 UID／萬用 origin 中繼已停用。 */ }
 
   async function initialisePopupAuthorization() {
     loginButton.hidden = true;
@@ -601,7 +427,7 @@
 
   async function initialiseMainApp() {
     const pendingNonce = getPendingNonce();
-    if (pendingNonce && receiveStoredAuthorization(pendingNonce)) return;
+    if (pendingNonce && await receiveStoredAuthorization(pendingNonce)) return;
     if (await resumeRememberedSession()) return;
 
     // 手機桌面 PWA 不初始化 LIFF，避免登入流程取代 App 視窗。
@@ -668,12 +494,14 @@
     updateInstallState();
   });
 
-  logoutButton.addEventListener('click', () => {
+  logoutButton.addEventListener('click', async () => {
     const profileToUnregister = oneSignalProfile || getRememberedProfile();
     const subscription = oneSignalClient && oneSignalClient.User && oneSignalClient.User.PushSubscription;
     if (profileToUnregister && subscription && subscription.id) {
-      void requestPushRegistration('unregister', profileToUnregister, subscription.id);
+      try {await requestPushRegistration('unregister', profileToUnregister, subscription.id);} catch (_) {}
     }
+    if(profileToUnregister){try{await SecureGAS.request(config.gasUrl,'logout',{sessionToken:profileToUnregister.sessionToken});}catch(_){setStatus('登出驗證尚未完成，請確認網路後重試。','error');return;}}
+    if(disconnectApp){disconnectApp();disconnectApp=null;}
     oneSignalProfile = null;
     try {
       if (window.liff && window.liff.isLoggedIn && window.liff.isLoggedIn()) window.liff.logout();
@@ -734,7 +562,7 @@
   });
   document.addEventListener('visibilitychange', async () => {
     if (document.visibilityState !== 'visible' || popupContext.isPopup) return;
-    if (receiveStoredAuthorization(getPendingNonce())) return;
+    if (await receiveStoredAuthorization(getPendingNonce())) return;
     try {
       if (await resumeRememberedSession()) return;
     } catch (error) {

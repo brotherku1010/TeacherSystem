@@ -3,13 +3,14 @@
 // replace this worker and break either offline support or push notifications.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'teacher-pwa-shell-v13';
+const CACHE_NAME = 'teacher-pwa-shell-v14-auth-v2';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './config.js',
   './app.js',
+  './secure-bridge.js',
   './assets/icon-192.png',
   './assets/icon-512.png'
 ];
@@ -20,7 +21,7 @@ self.addEventListener('install', (event) => {
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim())
+    caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('teacher-pwa-shell-') && key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim())
   );
 });
 
@@ -30,7 +31,7 @@ self.addEventListener('fetch', (event) => {
   // 師資資料與 GAS iframe 一律走網路，不寫入裝置快取。
   if (url.origin !== self.location.origin) return;
 
-  const isMutableShellFile = /\/(?:index\.html|app\.js|config\.js|manifest\.webmanifest)$/i.test(url.pathname);
+  const isMutableShellFile = /\/(?:index\.html|app\.js|secure-bridge\.js|config\.js|manifest\.webmanifest)$/i.test(url.pathname);
   if (request.mode === 'navigate' || isMutableShellFile) {
     // 授權邏輯與設定優先使用網路新版；離線時才退回快取，避免桌面端卡在舊版登入流程。
     event.respondWith(

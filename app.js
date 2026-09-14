@@ -52,7 +52,7 @@
   async function registerServiceWorker() {
     if (!('serviceWorker' in navigator)) return;
     try {
-      const registration = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      const registration = await navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' });
       // 每次開啟都檢查新版，避免桌面瀏覽器長期使用舊授權流程的快取。
       registration.update().catch(() => {});
     } catch (error) {

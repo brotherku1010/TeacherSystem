@@ -3,7 +3,7 @@
 // replace this worker and break either offline support or push notifications.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'teacher-pwa-shell-v14-auth-v2';
+const CACHE_NAME = 'teacher-pwa-shell-v15-auth-v2';
 const APP_SHELL = [
   './',
   './index.html',
@@ -35,7 +35,7 @@ self.addEventListener('fetch', (event) => {
   if (request.mode === 'navigate' || isMutableShellFile) {
     // 授權邏輯與設定優先使用網路新版；離線時才退回快取，避免桌面端卡在舊版登入流程。
     event.respondWith(
-      fetch(request).then((response) => {
+      fetch(request, { cache: 'no-store' }).then((response) => {
         if (response && response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
         return response;
       }).catch(() => caches.match(request).then((cached) => cached || caches.match('./index.html')))

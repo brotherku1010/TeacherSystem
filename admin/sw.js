@@ -2,13 +2,14 @@
 // same /TeacherSystem/admin/ scope.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'teacher-admin-pwa-shell-v2';
+const CACHE_NAME = 'teacher-admin-pwa-shell-v3-push-binding';
 const APP_SHELL = [
   './',
   './index.html',
   './manifest.webmanifest',
   './config.js',
   './app.js',
+  './secure-bridge.js',
   './assets/admin-icon-192.png',
   './assets/admin-icon-512.png'
 ];
@@ -18,16 +19,16 @@ self.addEventListener('install', (event) => {
 });
 
 self.addEventListener('activate', (event) => {
-  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
+  event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith('teacher-admin-pwa-shell-') && key !== CACHE_NAME).map((key) => caches.delete(key)))).then(() => self.clients.claim()));
 });
 
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
-  const mutable = /\/(?:admin\/)?(?:index\.html|app\.js|config\.js|manifest\.webmanifest)$/i.test(url.pathname);
+  const mutable = /\/(?:admin\/)?(?:index\.html|app\.js|secure-bridge\.js|config\.js|manifest\.webmanifest)$/i.test(url.pathname);
   if (request.mode === 'navigate' || mutable) {
-    event.respondWith(fetch(request).then((response) => {
+    event.respondWith(fetch(request, { cache: 'no-store' }).then((response) => {
       if (response && response.ok) caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
       return response;
     }).catch(() => caches.match(request).then((cached) => cached || caches.match('./index.html'))));

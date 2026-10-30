@@ -34,7 +34,59 @@
   let oneSignalClient = null;
   let oneSignalProfile = null;
   let oneSignalInitPromise = null;
-  let oneSignalJsonpSerial = 0;
+  let pushTail = Promise.resolve();
+  const pushTasks = new Map();
+  const pushDeviceStorageKey = 'teacherPwaPushDeviceKeyV1';
+  const pushPendingLogoutKey = 'teacherPwaPushPendingLogoutV1';
+  let pushError = '';
+
+  function normalizePushId(value) {
+    const id = String(value || '').trim().toLowerCase();
+    return /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(id) ? id : '';
+  }
+
+  function pushDeviceKey() {
+    const saved = localStorage.getItem(pushDeviceStorageKey);
+    if (/^[a-f0-9]{64}$/.test(saved || '')) return saved;
+    const key = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(pushDeviceStorageKey, key);
+    if (localStorage.getItem(pushDeviceStorageKey) !== key) throw new Error('請允許網站儲存空間，以安全綁定通知裝置。');
+    return key;
+  }
+
+  function queuePushTask(key, work) {
+    if (pushTasks.has(key)) return pushTasks.get(key);
+    const task = pushTail.catch(() => {}).then(work);
+    pushTail = task.catch(() => {});
+    pushTasks.set(key, task);
+    task.then(() => pushTasks.delete(key), () => pushTasks.delete(key));
+    return task;
+  }
+
+  function pendingPushLogout() {
+    const value = localStorage.getItem(pushPendingLogoutKey);
+    if (!value) return null;
+    let record;
+    try { record = JSON.parse(value); } catch (_) { throw new Error('通知登出資料異常，請聯絡管理員。'); }
+    if (!record || !/^[a-f0-9]{64}$/.test(String(record.sessionToken || ''))) throw new Error('通知登出資料異常，請聯絡管理員。');
+    return record;
+  }
+
+  function retryPendingPushLogout() {
+    const record = pendingPushLogout();
+    if (!record) return Promise.resolve(false);
+    return queuePushTask('logout:' + record.sessionToken, async () => {
+      const result = await SecureGAS.request(config.gasUrl, 'logout', {
+        sessionToken: record.sessionToken, subscriptionId: record.subscriptionId,
+        appId: record.appId, deviceKey: pushDeviceKey()
+      });
+      if (!result || !result.success) throw new Error('通知解除綁定尚未確認，請連線後重試登出。');
+      const current = pendingPushLogout();
+      if (current && current.sessionToken === record.sessionToken) localStorage.removeItem(pushPendingLogoutKey);
+      pushError = '';
+      return true;
+    });
+  }
 
   function setStatus(message, state) {
     status.textContent = message || '';
@@ -200,28 +252,42 @@
     return popupContext.isPopup ? popupContext.nonce : getPendingNonce();
   }
 
-  async function requestPushRegistration(mode,profile,subscriptionId) {const normalized=normalizeProfile(profile);if(!normalized||!subscriptionId)return null;return SecureGAS.request(config.gasUrl,'subscribe',{sessionToken:normalized.sessionToken,subscriptionId,appId:config.oneSignalAppId,active:mode==='register'});}
+  function requestPushRegistration(mode, profile, subscriptionId) {
+    const normalized = normalizeProfile(profile), id = normalizePushId(subscriptionId), appId = normalizePushId(config.oneSignalAppId);
+    if (!normalized || !id || !appId) return Promise.resolve(null);
+    const token = normalized.sessionToken;
+    return queuePushTask([mode, token, appId, id].join('|'), async () => {
+      // A queued callback from the previous account may not rebind this device.
+      if (mode === 'register' && (!oneSignalProfile || oneSignalProfile.sessionToken !== token || pendingPushLogout())) return { skipped: true };
+      const result = await SecureGAS.request(config.gasUrl, 'subscribe', {
+        sessionToken: token, subscriptionId: id, appId, active: mode === 'register', deviceKey: pushDeviceKey()
+      });
+      if (!result || !result.success) throw new Error('通知裝置綁定尚未完成，請點擊通知按鈕重試。');
+      pushError = '';
+      return result;
+    });
+  }
 
   async function syncOneSignalPushSubscription(subscription) {
     if (!oneSignalClient || !oneSignalProfile) return null;
     const current = subscription || oneSignalClient.User.PushSubscription || {};
-    const subscriptionId = String(current.id || '').trim();
+    const subscriptionId = normalizePushId(current.id);
     if (!subscriptionId) return null;
-    const isOptedIn = current.optedIn !== false;
+    const isOptedIn = current.optedIn === true;
     return requestPushRegistration(isOptedIn ? 'register' : 'unregister', oneSignalProfile, subscriptionId);
   }
 
   function updatePushButton() {
     if (!pushButton) return;
-    pushButton.hidden = !config.oneSignalAppId;
+    pushButton.hidden = !config.oneSignalAppId || !oneSignalProfile;
     if (!config.oneSignalAppId || !oneSignalClient) {
-      pushButton.disabled = true;
-      pushButton.textContent = '通知準備中';
+      pushButton.disabled = !oneSignalProfile;
+      pushButton.textContent = pushError ? '重試通知準備' : '通知準備中';
       return;
     }
     const subscription = oneSignalClient.User && oneSignalClient.User.PushSubscription;
     pushButton.disabled = false;
-    pushButton.textContent = subscription && subscription.optedIn ? '通知已啟用' : '啟用通知';
+    pushButton.textContent = pushError ? '通知綁定待重試' : subscription && subscription.optedIn ? '通知已啟用' : '啟用通知';
   }
 
   function initialiseOneSignalPush(profile) {
@@ -232,7 +298,10 @@
       pushButton.disabled = true;
       pushButton.textContent = '通知準備中';
     }
-    if (oneSignalInitPromise) return oneSignalInitPromise;
+    if (oneSignalInitPromise) return oneSignalInitPromise.then(async ready => {
+      if (ready && oneSignalProfile) await syncOneSignalPushSubscription();
+      updatePushButton();return ready;
+    });
 
     oneSignalInitPromise = new Promise((resolve) => {
       window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -252,15 +321,19 @@
           oneSignalClient = OneSignal;
           OneSignal.User.PushSubscription.addEventListener('change', (event) => {
             const current = event && event.current ? event.current : OneSignal.User.PushSubscription;
-            void syncOneSignalPushSubscription(current).then(updatePushButton);
+            void syncOneSignalPushSubscription(current).then(updatePushButton).catch(error => {
+              pushError = error.message;updatePushButton();
+            });
           });
           await syncOneSignalPushSubscription();
           updatePushButton();
           resolve(true);
         } catch (error) {
           console.warn('OneSignal initialisation failed.', error);
+          pushError = '通知準備失敗，請重試。';
           updatePushButton();
-          resolve(false);
+          if (!oneSignalClient) oneSignalInitPromise = null;
+          resolve(!!oneSignalClient);
         }
       });
     });
@@ -269,7 +342,7 @@
 
   function buildProviderUrl() { return config.gasUrl; }
 
-  async function launchProvider(profile) { const normalized=normalizeProfile(profile);if(!normalized)throw new Error('請重新使用 LINE 登入。');const verified=await SecureGAS.request(config.gasUrl,'session',{sessionToken:normalized.sessionToken});rememberAuthorizedProfile(verified);if(disconnectApp)disconnectApp();disconnectApp=SecureGAS.connectApp(config.gasUrl,frame,verified,()=>{clearRememberedProfile();frame.removeAttribute('src');shell.classList.remove('is-ready');loginButton.hidden=false;loginButton.disabled=false;setStatus('登入已失效，請重新使用 LINE 登入。','error');});void initialiseOneSignalPush(verified);frame.addEventListener('load',()=>{shell.classList.add('is-ready');logoutButton.hidden=false;},{once:true});setStatus('正在載入已驗證的師資工作區…'); }
+  async function launchProvider(profile) { const normalized=normalizeProfile(profile);if(!normalized)throw new Error('請重新使用 LINE 登入。');if(pendingPushLogout())await retryPendingPushLogout();const verified=await SecureGAS.request(config.gasUrl,'session',{sessionToken:normalized.sessionToken});rememberAuthorizedProfile(verified);if(disconnectApp)disconnectApp();disconnectApp=SecureGAS.connectApp(config.gasUrl,frame,verified,()=>{oneSignalProfile=null;clearRememberedProfile();updatePushButton();frame.removeAttribute('src');shell.classList.remove('is-ready');loginButton.hidden=false;loginButton.disabled=false;setStatus('登入已失效，請重新使用 LINE 登入。','error');});void initialiseOneSignalPush(verified).catch(error=>{pushError=error.message;updatePushButton();});frame.addEventListener('load',()=>{shell.classList.add('is-ready');logoutButton.hidden=false;},{once:true});setStatus('正在載入已驗證的師資工作區…'); }
 
   async function readProfile() { return SecureGAS.request(config.gasUrl,'login',{idToken:window.liff.getIDToken&&window.liff.getIDToken(),accessToken:window.liff.getAccessToken&&window.liff.getAccessToken()}); }
 
@@ -370,6 +443,9 @@
 
   async function resumeRememberedSession() {
     if (popupContext.isPopup) return false;
+    // Returning from another app must finish a requested logout, never restore
+    // the session that the user just asked to revoke.
+    if (pendingPushLogout()) { await logoutProvider();return false; }
     const profile = getRememberedProfile();
     if (!profile) return false;
     stopAuthPolling();
@@ -426,6 +502,11 @@
   }
 
   async function initialiseMainApp() {
+    if (pendingPushLogout()) {
+      try { await retryPendingPushLogout();finishProviderLogout(); }
+      catch (_) { logoutButton.hidden=false;loginButton.disabled=true;setStatus('上次登出尚未完成，請連線後點擊登出重試。','error'); }
+      return;
+    }
     const pendingNonce = getPendingNonce();
     if (pendingNonce && await receiveStoredAuthorization(pendingNonce)) return;
     if (await resumeRememberedSession()) return;
@@ -494,38 +575,47 @@
     updateInstallState();
   });
 
-  logoutButton.addEventListener('click', async () => {
-    const profileToUnregister = oneSignalProfile || getRememberedProfile();
-    const subscription = oneSignalClient && oneSignalClient.User && oneSignalClient.User.PushSubscription;
-    if (profileToUnregister && subscription && subscription.id) {
-      try {await requestPushRegistration('unregister', profileToUnregister, subscription.id);} catch (_) {}
-    }
-    if(profileToUnregister){try{await SecureGAS.request(config.gasUrl,'logout',{sessionToken:profileToUnregister.sessionToken});}catch(_){setStatus('登出驗證尚未完成，請確認網路後重試。','error');return;}}
+  function finishProviderLogout() {
     if(disconnectApp){disconnectApp();disconnectApp=null;}
     oneSignalProfile = null;
     try {
       if (window.liff && window.liff.isLoggedIn && window.liff.isLoggedIn()) window.liff.logout();
+    } catch (_) { /* Server logout was confirmed; local SDK cleanup is optional. */ }
+    stopAuthPolling();clearPendingNonce();clearRememberedProfile();
+    frame.removeAttribute('src');shell.classList.remove('is-ready');logoutButton.hidden=true;
+    loginButton.hidden=false;loginButton.disabled=false;loginButton.textContent='使用 LINE 登入';
+    updatePushButton();setStatus('已登出，請重新使用 LINE 登入。');
+  }
+
+  async function logoutProvider() {
+    if (logoutButton.disabled) return;
+    logoutButton.disabled = true;
+    const profileToUnregister = oneSignalProfile || getRememberedProfile();
+    const subscription = oneSignalClient && oneSignalClient.User && oneSignalClient.User.PushSubscription;
+    try {
+      if (!pendingPushLogout() && profileToUnregister) localStorage.setItem(pushPendingLogoutKey, JSON.stringify({
+        sessionToken: profileToUnregister.sessionToken, subscriptionId: normalizePushId(subscription && subscription.id), appId: normalizePushId(config.oneSignalAppId)
+      }));
+      oneSignalProfile = null;updatePushButton();
+      await retryPendingPushLogout();finishProviderLogout();
     } catch (error) {
-      console.warn('Unable to clear LIFF browser session.', error);
+      pushError = '通知解除綁定待重試';
+      setStatus('登出與通知解除綁定尚未確認，請確認網路後再點登出重試。','error');
+      loginButton.disabled = true;
+    } finally {
+      logoutButton.disabled = false;
     }
-    stopAuthPolling();
-    clearPendingNonce();
-    clearRememberedProfile();
-    frame.removeAttribute('src');
-    shell.classList.remove('is-ready');
-    logoutButton.hidden = true;
-    loginButton.hidden = false;
-    loginButton.disabled = false;
-    loginButton.textContent = '使用 LINE 登入';
-    setStatus('已登出，請重新使用 LINE 登入。');
-  });
+  }
+  logoutButton.addEventListener('click', logoutProvider);
 
   loginButton.addEventListener('click', openLineAuthorization);
   if (pushButton) {
     pushButton.addEventListener('click', async () => {
-      if (!oneSignalClient) return;
+      if (!oneSignalProfile) return;
       pushButton.disabled = true;
       try {
+        await initialiseOneSignalPush(oneSignalProfile);
+        if (!oneSignalClient) return;
         if (!oneSignalClient.Notifications.isPushSupported()) {
           pushButton.textContent = '此裝置不支援通知';
           return;
@@ -542,6 +632,7 @@
         }
         await syncOneSignalPushSubscription();
       } catch (error) {
+        pushError = '通知綁定待重試';
         console.warn('Unable to request push permission.', error);
       } finally {
         updatePushButton();
@@ -570,7 +661,11 @@
     }
     if (getPendingNonce()) pollAuthRelay();
   });
-  window.addEventListener('online', updateInstallState);
+  window.addEventListener('online', () => {
+    updateInstallState();
+    if (pendingPushLogout()) void logoutProvider();
+    else if (oneSignalProfile) void syncOneSignalPushSubscription().then(updatePushButton).catch(error => {pushError=error.message;updatePushButton();});
+  });
   window.addEventListener('offline', () => setStatus('目前離線。請恢復網路後再登入或讀取資料。', 'error'));
   initialise();
 })();

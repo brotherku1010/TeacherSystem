@@ -3,7 +3,7 @@
 // replace this worker and break either offline support or push notifications.
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'teacher-pwa-shell-v15-auth-v2';
+const CACHE_NAME = 'teacher-pwa-shell-v16-push-binding';
 const APP_SHELL = [
   './',
   './index.html',
